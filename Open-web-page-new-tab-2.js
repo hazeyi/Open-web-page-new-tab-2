@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         打开网页：新标签页2 (v3.3 标题保护版)
+// @name         打开网页：新标签页2 (v3.4 双重保险版)
 // @namespace    http://tampermonkey.net/
-// @version      3.3
-// @description  修正误判：引入 H1-H6 标题保护机制，将关键词匹配改为"独立单词"模式，防止"Display"被误判为"Play"导致功能失效。
+// @version      3.4
+// @description  完美逻辑：1. 按住 Alt/Option 点击可强制召唤选择框(解决误放行)；2. "当前页"按钮升级为原生模拟点击(解决误拦截)。
 // @author       HAZE
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
@@ -19,6 +19,9 @@
     // === UI 配置 ===
     const AUTO_CLOSE_TIMEOUT = 3500;
     
+    // === 内部状态 ===
+    let isBypassing = false; // 用于"原生点击"的穿透标记
+
     // === 状态管理 ===
     const state = {
         get mode() { return GM_getValue('openMode', 'popup'); },
@@ -81,7 +84,6 @@
         document.documentElement.setAttribute('data-haze-global-theme', theme);
         const els = document.querySelectorAll('#haze-popup, #haze-settings-overlay');
         els.forEach(el => el.setAttribute('data-haze-theme', theme));
-        
         if (theme === 'dark') {
             document.documentElement.style.setProperty('--haze-ind-popup', '#bf5af2');
             document.documentElement.style.setProperty('--haze-ind-newtab', '#32d74b');
@@ -100,20 +102,18 @@
         return false;
     };
 
-    const isFunctionalLink = (link) => {
+    const isFunctionalLink = (link, isForceMode) => {
+        // [保险机制1] 如果用户按住 Alt 键，所有规则失效，强制返回 false (接管点击)
+        if (isForceMode) return false;
+
         const rawHref = link.getAttribute('href');
         if (!rawHref || rawHref === '#' || rawHref.startsWith('javascript:') || rawHref.startsWith('mailto:')) return true;
         if (link.target === '_self' || link.target === '_iframe') return true;
         if (link.getAttribute('class')?.includes('script-link')) return false;
 
-        // 1. 标题标签特权 (MacKed 修复核心)
-        // 如果链接被 h1-h6 包裹，直接认定为文章标题，强制接管
         if (link.closest('h1, h2, h3, h4, h5, h6')) return false;
-
-        // 2. 富媒体特权 (MacKed 图片修复)
         if (isRichMediaLink(link)) return false; 
 
-        // 3. 页内锚点检查 (ClashMac 目录修复)
         try {
             if (rawHref.startsWith('#')) return true;
             const urlObj = new URL(link.href);
@@ -123,17 +123,13 @@
         const attrs = ['onclick', 'data-toggle', 'data-target', 'aria-controls', 'aria-expanded', 'ng-click', '@click', 'v-on:click'];
         for (const attr of attrs) if (link.hasAttribute(attr)) return true;
 
-        // 4. 关键词过滤 (v3.3 升级：正则单词边界匹配)
-        // 防止 "Display" 命中 "play"，"Editor" 命中 "edit"
         const text = link.textContent.trim();
         if (/^\d+$/.test(text)) return true;
 
         const checkStr = (link.className + ' ' + link.id + ' ' + text).toLowerCase();
         const keywords = ['login', 'logout', 'sign', 'cart', 'buy', 'like', 'fav', 'share', 'comment', 'play', '登录', '注册', '注销', '购物车', '购买', '点赞', '收藏', '评论', '播放', '展开', '收起'];
         
-        // 构建正则：\bkeyword\b
         const isKeywordMatch = keywords.some(kw => {
-            // 中文直接匹配，英文加边界
             if (/[\u4e00-\u9fa5]/.test(kw)) return checkStr.includes(kw);
             return new RegExp(`\\b${kw}\\b`).test(checkStr);
         });
@@ -155,7 +151,7 @@
         
         document.querySelectorAll('a').forEach(link => {
             if (isRichMediaLink(link)) return;
-            if (isFunctionalLink(link)) return;
+            if (isFunctionalLink(link, false)) return;
             link.setAttribute('data-haze-status', 'text');
             link.classList.add(cls);
         });
@@ -163,6 +159,9 @@
     };
 
     const handleLinkClick = (event) => {
+        // [保险机制2] 如果正在执行原生模拟点击，直接放行，不拦截
+        if (isBypassing) return;
+
         let link = event.target.closest('a');
         if (link && (!link.getAttribute('href') || link.getAttribute('href') === '#')) {
              const parentLink = link.parentElement ? link.parentElement.closest('a') : null;
@@ -173,9 +172,15 @@
         if (!rawHref) return;
 
         if (state.excluded.includes(location.hostname)) return;
+        
+        // 允许 Ctrl/Meta/Shift 默认行为
         if (event.ctrlKey || event.metaKey || event.shiftKey) return;
         
-        if (isFunctionalLink(link)) return;
+        // 检查 Alt 键 (强制模式)
+        const isForceMode = event.altKey;
+        
+        // 如果是功能链接，且没有按 Alt 强制，则放行
+        if (isFunctionalLink(link, isForceMode)) return;
 
         const mode = state.mode;
         if (mode === 'popup') {
@@ -195,8 +200,17 @@
         popup.id = 'haze-popup';
         Object.assign(popup.style, { top: `${e.clientY}px`, left: `${e.clientX}px` });
         
-        const btn1 = document.createElement('div'); btn1.className = 'haze-popup-btn'; btn1.textContent = '🏠 当前';
-        btn1.onclick = (ev) => { ev.stopPropagation(); location.href = url; popup.remove(); };
+        // [保险机制2] 升级版"当前页"按钮：执行原生点击
+        const btn1 = document.createElement('div'); 
+        btn1.className = 'haze-popup-btn'; 
+        btn1.textContent = '🏠 当前';
+        btn1.onclick = (ev) => { 
+            popup.remove();
+            isBypassing = true; // 开启穿透标记
+            link.click();       // 触发原生点击 (让网页自带JS执行)
+            // 50ms后重置标记，恢复拦截
+            setTimeout(() => isBypassing = false, 50); 
+        };
         
         const btn2 = document.createElement('div'); btn2.className = 'haze-popup-btn primary'; 
         btn2.textContent = state.background ? '🚀 后台' : '↗ 新标签';
@@ -250,6 +264,9 @@
                 <div class="haze-row">
                     <div>当前网站</div>
                     <span class="haze-btn ${isEx?'':'active'}" id="btn-ex">${isEx?'已排除':'生效中'}</span>
+                </div>
+                <div style="font-size:12px;color:#999;margin-top:20px;text-align:center;">
+                    按住 Alt/Option 点击可强制召唤选择框
                 </div>
             </div>`;
         
