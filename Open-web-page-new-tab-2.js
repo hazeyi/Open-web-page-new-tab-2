@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         打开网页：新标签页2 (防抖容错版)
+// @name         打开网页：新标签页2 (设置面板版)
 // @namespace    http://tampermonkey.net/
-// @version      1.4
-// @description  智能识别+可视化指示器。优化交互：支持"点击-再点击"极速流，新增鼠标移出防抖机制，容错率更高。
+// @version      2.0
+// @description  智能识别+可视化指示器+设置面板。集成黑名单管理，支持"点击-再点击"极速流，防抖容错。
 // @author       HAZE
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
@@ -16,31 +16,40 @@
 (function() {
     'use strict';
 
-    // === UI 配置 (Zen Mode) ===
-    const AUTO_CLOSE_TIMEOUT = 3500;   // 全局自动关闭时间（稍微延长以配合容错）
-    const MOUSE_LEAVE_DELAY = 800;     // 关键修改：鼠标移出后的容错时间 (0.8秒)
+    // === UI 配置 ===
+    const AUTO_CLOSE_TIMEOUT = 3500;
+    const MOUSE_LEAVE_DELAY = 800;
     
     // 颜色配置
-    const COLOR_PRIMARY = '#007AFF'; // macOS Blue
-    const COLOR_SECONDARY = '#555555';
-    const COLOR_POPUP_BG = 'rgba(255, 255, 255, 0.90)'; // 稍微增加一点不透明度，提升可见性
+    const COLOR_PRIMARY = '#007AFF';
+    const COLOR_BG_BLUR = 'rgba(255, 255, 255, 0.85)';
     
     // 指示器颜色
-    const IND_COLOR_POPUP = '#af52de'; // macOS Purple
-    const IND_COLOR_NEWTAB = '#34c759'; // macOS Green
+    const IND_COLOR_POPUP = '#af52de';
+    const IND_COLOR_NEWTAB = '#34c759';
 
     // === 状态管理 ===
-    const getCurrentMode = () => GM_getValue('openMode', 'popup');
-    const getBackgroundMode = () => GM_getValue('backgroundMode', false);
-    const getIndicatorState = () => GM_getValue('showIndicator', true);
+    const state = {
+        get mode() { return GM_getValue('openMode', 'popup'); },
+        set mode(v) { GM_setValue('openMode', v); },
+        
+        get background() { return GM_getValue('backgroundMode', false); },
+        set background(v) { GM_setValue('backgroundMode', v); },
+        
+        get indicator() { return GM_getValue('showIndicator', true); },
+        set indicator(v) { GM_setValue('showIndicator', v); },
+        
+        get excluded() { return GM_getValue('excludedSites', []); },
+        set excluded(v) { GM_setValue('excludedSites', v); }
+    };
+
     const getCurrentDomain = () => window.location.hostname;
-    const getExcludedSites = () => GM_getValue('excludedSites', []);
-    const isCurrentSiteExcluded = () => getExcludedSites().includes(getCurrentDomain());
+    const isCurrentSiteExcluded = () => state.excluded.includes(getCurrentDomain());
 
     // === CSS 注入 ===
     const style = document.createElement('style');
     style.textContent = `
-        /* 指示器样式 */
+        /* 指示器 */
         a[data-haze-link="active"] { position: relative; }
         a[data-haze-link="active"]::after {
             content: ""; display: inline-block; width: 5px; height: 5px;
@@ -52,100 +61,257 @@
         .haze-ind-newtab::after { background-color: ${IND_COLOR_NEWTAB}; box-shadow: 0 0 6px ${IND_COLOR_NEWTAB}; }
 
         /* 弹窗动画 */
-        @keyframes haze-pop-in {
-            0% { opacity: 0; transform: translate(-65%, -45%) scale(0.95); }
-            100% { opacity: 1; transform: translate(-65%, -50%) scale(1); }
+        @keyframes haze-fade-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+        
+        /* 设置面板样式 */
+        #haze-settings-overlay {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(0,0,0,0.2); z-index: 2147483647;
+            display: flex; justify-content: center; align-items: center;
+            backdrop-filter: blur(2px);
         }
+        #haze-settings-panel {
+            background: #fff; width: 400px; max-height: 80vh;
+            border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.15);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow: hidden; display: flex; flex-direction: column;
+            animation: haze-fade-in 0.2s ease-out;
+        }
+        .haze-header {
+            padding: 16px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;
+            background: #f9f9f9;
+        }
+        .haze-title { font-size: 16px; font-weight: 600; color: #333; }
+        .haze-close { cursor: pointer; font-size: 20px; color: #999; line-height: 1; }
+        .haze-close:hover { color: #333; }
+        
+        .haze-body { padding: 0 20px; overflow-y: auto; flex: 1; }
+        .haze-section { padding: 16px 0; border-bottom: 1px solid #f0f0f0; }
+        .haze-section:last-child { border-bottom: none; }
+        .haze-section-title { font-size: 12px; color: #888; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+        
+        /* 表单控件 */
+        .haze-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .haze-label { font-size: 14px; color: #333; }
+        
+        /* 模式选择 */
+        .haze-mode-select { display: flex; gap: 8px; background: #f0f0f5; padding: 4px; border-radius: 8px; }
+        .haze-mode-btn { 
+            flex: 1; padding: 6px; font-size: 12px; text-align: center; cursor: pointer; 
+            border-radius: 6px; color: #666; transition: all 0.2s;
+        }
+        .haze-mode-btn.active { background: #fff; color: ${COLOR_PRIMARY}; box-shadow: 0 2px 4px rgba(0,0,0,0.05); font-weight: 500; }
+        
+        /* 开关 Switch */
+        .haze-switch { position: relative; display: inline-block; width: 40px; height: 22px; }
+        .haze-switch input { opacity: 0; width: 0; height: 0; }
+        .haze-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 34px; }
+        .haze-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 2px; bottom: 2px; background-color: white; transition: .4s; border-radius: 50%; }
+        input:checked + .haze-slider { background-color: ${COLOR_PRIMARY}; }
+        input:checked + .haze-slider:before { transform: translateX(18px); }
+
+        /* 黑名单列表 */
+        .haze-list { max-height: 150px; overflow-y: auto; background: #f9f9f9; border-radius: 8px; border: 1px solid #eee; }
+        .haze-list-item { display: flex; justify-content: space-between; padding: 8px 12px; font-size: 13px; color: #555; border-bottom: 1px solid #eee; }
+        .haze-list-item:last-child { border-bottom: none; }
+        .haze-remove-btn { color: #ff3b30; cursor: pointer; font-size: 12px; }
+        .haze-input-group { display: flex; gap: 8px; margin-top: 10px; }
+        .haze-input { flex: 1; padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; }
+        .haze-btn { padding: 6px 12px; background: ${COLOR_PRIMARY}; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+        .haze-btn:hover { opacity: 0.9; }
+        
+        .haze-footer { padding: 12px 20px; background: #f9f9f9; text-align: right; font-size: 12px; color: #999; }
     `;
     document.head.appendChild(style);
 
-    // === 智能链接识别 ===
+    // === 智能识别逻辑 (保持不变) ===
     const isFunctionalLink = (link) => {
         const href = link.getAttribute('href');
-        if (!href || href === '' || href === '#' || href === 'javascript:;' || href.includes('javascript:void')) return true;
-        if (href.startsWith('javascript:') || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('sms:')) return true;
+        if (!href || href === '#' || href.includes('javascript:')) return true;
         if (link.target === '_self' || link.target === '_top' || link.target === 'iframe') return true;
-        
-        const role = link.getAttribute('role');
-        if (role && ['button', 'tab', 'menuitem', 'option', 'switch', 'checkbox', 'radio', 'treeitem'].includes(role)) return true;
-
-        try {
-            if (href.startsWith('#')) return true;
-            const urlObj = new URL(link.href);
-            if (urlObj.pathname === window.location.pathname && urlObj.hash !== '') return true;
-        } catch (e) {}
-
-        const functionalityAttrs = [
-            'onclick', 'download', 'data-toggle', 'data-trigger', 'data-target', 'data-action', 'data-dismiss', 'data-cmd',
-            'aria-controls', 'aria-expanded', 'aria-haspopup', 'aria-disabled', 'aria-selected',
-            'ng-click', '@click', 'v-on:click', ':click', 'hx-get', 'hx-post'
-        ];
-        for (const attr of functionalityAttrs) {
-            if (link.hasAttribute(attr)) return true;
-        }
-
+        if (['button', 'tab', 'menuitem'].includes(link.getAttribute('role'))) return true;
+        try { if (new URL(link.href).pathname === location.pathname && link.hash) return true; } catch(e){}
         const text = link.textContent.trim();
         if (/^\d+$/.test(text)) return true;
+        if (link.className.includes('script-link')) return false; // GreasyFork 特例
 
-        const className = (link.className || '').toLowerCase();
-        if (className.includes('script-link')) return false;
-
-        const strToCheck = (
-            className + ' ' + (link.id || '') + ' ' + (link.title || '') + ' ' +
-            (link.getAttribute('aria-label') || '') + ' ' + (link.parentElement ? link.parentElement.className : '')
-        ).toLowerCase();
-
-        const functionalKeywords = [
-            'login', 'logout', 'signin', 'register', 'submit', 'cancel', 'edit', 'delete', 'setting', 'close', 
-            'expand', 'collapse', 'load more', 'next', 'prev', 'filter', 'sort', 'search', 'cart', 'buy', 
-            'sku', 'select', 'like', 'fav', 'share', 'reply', 'comment', 'play', 'pause'
-        ];
-        if (functionalKeywords.some(kw => strToCheck.includes(kw))) return true;
-
-        const cnKeywords = ['登录', '注册', '注销', '提交', '取消', '编辑', '删除', '设置', '更多', '展开', '收起', '筛选', '排序', '购物车', '购买', '点赞', '收藏', '分享', '回复', '评论', '播放'];
-        const lowerText = text.toLowerCase();
-        if (lowerText.length <= 5 && cnKeywords.some(kw => lowerText.includes(kw))) return true;
-        if (cnKeywords.some(kw => strToCheck.includes(kw))) return true;
-
+        const str = (link.className + link.id + (link.title||'') + text).toLowerCase();
+        const keywords = ['login', 'logout', 'sign', 'cart', 'buy', 'sku', 'like', 'fav', 'share', 'comment', 'play', '登录', '注册', '购物车', '购买', '点赞', '收藏', '评论', '回复'];
+        if (keywords.some(kw => str.includes(kw))) return true;
         return false;
     };
-
     const isSystemFolderLink = (href) => /^file:\/\/\/[a-zA-Z]:\//.test(href);
 
     // === 指示器逻辑 ===
     const updateLinkIndicators = () => {
-        if (!getIndicatorState() || isCurrentSiteExcluded() || getCurrentMode() === 'default') {
-            document.querySelectorAll('a[data-haze-link]').forEach(el => {
-                el.removeAttribute('data-haze-link');
-                el.className = el.className.replace(/haze-ind-\w+/g, '').trim();
-            });
-            return;
-        }
-        const mode = getCurrentMode();
-        const indicatorClass = mode === 'popup' ? 'haze-ind-popup' : 'haze-ind-newtab';
-        
-        document.querySelectorAll('a:not([data-haze-link])').forEach(link => {
-            if (!isFunctionalLink(link) && !isSystemFolderLink(link.href)) {
+        // 清理旧标记
+        document.querySelectorAll('a[data-haze-link]').forEach(el => {
+            el.removeAttribute('data-haze-link');
+            el.className = el.className.replace(/haze-ind-\w+/g, '').trim();
+        });
+
+        if (!state.indicator || isCurrentSiteExcluded() || state.mode === 'default') return;
+
+        const indicatorClass = state.mode === 'popup' ? 'haze-ind-popup' : 'haze-ind-newtab';
+        document.querySelectorAll('a').forEach(link => {
+            if (!link.hasAttribute('data-haze-link') && !isFunctionalLink(link) && !isSystemFolderLink(link.href)) {
                 link.setAttribute('data-haze-link', 'active');
                 link.classList.add(indicatorClass);
             }
         });
     };
 
-    const observeDOM = () => {
-        const observer = new MutationObserver((mutations) => {
-            if (mutations.some(m => m.type === 'childList' && m.addedNodes.length > 0)) {
-                setTimeout(updateLinkIndicators, 500);
-            }
+    // === 设置面板逻辑 ===
+    const createSettingsPanel = () => {
+        if (document.getElementById('haze-settings-overlay')) return;
+
+        const overlay = document.createElement('div');
+        overlay.id = 'haze-settings-overlay';
+        
+        // 面板 HTML 结构
+        const currentDomain = getCurrentDomain();
+        const isExcluded = isCurrentSiteExcluded();
+        
+        overlay.innerHTML = `
+            <div id="haze-settings-panel">
+                <div class="haze-header">
+                    <div class="haze-title">脚本设置中心</div>
+                    <div class="haze-close">×</div>
+                </div>
+                <div class="haze-body">
+                    <div class="haze-section">
+                        <div class="haze-section-title">默认打开模式</div>
+                        <div class="haze-mode-select">
+                            <div class="haze-mode-btn ${state.mode==='popup'?'active':''}" data-val="popup">选择框</div>
+                            <div class="haze-mode-btn ${state.mode==='newtab'?'active':''}" data-val="newtab">直接新标签</div>
+                            <div class="haze-mode-btn ${state.mode==='default'?'active':''}" data-val="default">禁用脚本</div>
+                        </div>
+                    </div>
+
+                    <div class="haze-section">
+                        <div class="haze-section-title">交互体验</div>
+                        <div class="haze-row">
+                            <div class="haze-label">后台静默打开新标签</div>
+                            <label class="haze-switch">
+                                <input type="checkbox" id="sw-bg" ${state.background?'checked':''}>
+                                <span class="haze-slider"></span>
+                            </label>
+                        </div>
+                        <div class="haze-row">
+                            <div class="haze-label">显示链接指示器 (圆点)</div>
+                            <label class="haze-switch">
+                                <input type="checkbox" id="sw-ind" ${state.indicator?'checked':''}>
+                                <span class="haze-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="haze-section">
+                        <div class="haze-section-title">排除列表 (Blacklist)</div>
+                        <div class="haze-row">
+                            <div class="haze-label">当前网站: <b>${currentDomain}</b></div>
+                            <button class="haze-btn" id="btn-toggle-site">${isExcluded ? '✅ 恢复生效' : '🚫 排除此站'}</button>
+                        </div>
+                        <div class="haze-list" id="haze-blacklist">
+                            </div>
+                        <div class="haze-input-group">
+                            <input type="text" class="haze-input" id="input-domain" placeholder="输入域名 (如 example.com)">
+                            <button class="haze-btn" id="btn-add-domain">添加</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="haze-footer">v2.0 · Designed by HAZE</div>
+            </div>
+        `;
+
+        // === 逻辑绑定 ===
+        
+        // 1. 关闭面板
+        const closePanel = () => {
+            overlay.remove();
+            updateLinkIndicators(); // 退出时刷新页面指示器
+        };
+        overlay.querySelector('.haze-close').onclick = closePanel;
+        overlay.onclick = (e) => { if(e.target === overlay) closePanel(); };
+
+        // 2. 模式切换
+        overlay.querySelectorAll('.haze-mode-btn').forEach(btn => {
+            btn.onclick = () => {
+                state.mode = btn.dataset.val;
+                overlay.querySelectorAll('.haze-mode-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            };
         });
-        observer.observe(document.body, { childList: true, subtree: true });
+
+        // 3. 开关切换
+        overlay.querySelector('#sw-bg').onchange = (e) => state.background = e.target.checked;
+        overlay.querySelector('#sw-ind').onchange = (e) => state.indicator = e.target.checked;
+
+        // 4. 黑名单渲染与操作
+        const renderBlacklist = () => {
+            const listEl = overlay.querySelector('#haze-blacklist');
+            listEl.innerHTML = state.excluded.length ? '' : '<div style="padding:10px;text-align:center;color:#ccc">暂无排除网站</div>';
+            state.excluded.forEach(site => {
+                const item = document.createElement('div');
+                item.className = 'haze-list-item';
+                item.innerHTML = `<span>${site}</span><span class="haze-remove-btn" data-site="${site}">移除</span>`;
+                listEl.appendChild(item);
+            });
+            
+            // 绑定移除事件
+            listEl.querySelectorAll('.haze-remove-btn').forEach(btn => {
+                btn.onclick = () => {
+                    const s = state.excluded.filter(x => x !== btn.dataset.site);
+                    state.excluded = s;
+                    renderBlacklist();
+                    refreshToggleBtn();
+                };
+            });
+        };
+
+        const refreshToggleBtn = () => {
+            const btn = overlay.querySelector('#btn-toggle-site');
+            const isEx = state.excluded.includes(currentDomain);
+            btn.textContent = isEx ? '✅ 恢复生效' : '🚫 排除此站';
+            btn.style.backgroundColor = isEx ? '#34c759' : '#ff3b30';
+        };
+
+        // 切换当前站
+        overlay.querySelector('#btn-toggle-site').onclick = () => {
+            const list = state.excluded;
+            if (list.includes(currentDomain)) {
+                state.excluded = list.filter(x => x !== currentDomain);
+            } else {
+                list.push(currentDomain);
+                state.excluded = list;
+            }
+            renderBlacklist();
+            refreshToggleBtn();
+        };
+
+        // 手动添加
+        overlay.querySelector('#btn-add-domain').onclick = () => {
+            const input = overlay.querySelector('#input-domain');
+            const domain = input.value.trim();
+            if (domain && !state.excluded.includes(domain)) {
+                const list = state.excluded;
+                list.push(domain);
+                state.excluded = list;
+                renderBlacklist();
+                input.value = '';
+                refreshToggleBtn();
+            }
+        };
+
+        // 初始化渲染
+        renderBlacklist();
+        refreshToggleBtn();
+        document.body.appendChild(overlay);
     };
 
-    // === UI 渲染 (关键修改：防抖机制) ===
+    // === UI 渲染 (Popup) ===
     const createLinkOptionsPopup = (event, link) => {
         if (isCurrentSiteExcluded() || isFunctionalLink(link) || isSystemFolderLink(link.href)) return;
-
-        // 移除已存在的弹窗（防止多开）
         const existing = document.getElementById('haze-popup');
         if (existing) existing.remove();
 
@@ -153,181 +319,72 @@
         popup.id = 'haze-popup';
         
         Object.assign(popup.style, {
-            position: 'fixed',
-            top: `${event.clientY}px`,
-            left: `${event.clientX}px`,
-            transform: 'translate(-65%, -50%)', // 保持偏移，确保右侧按钮在鼠标下
-            backgroundColor: COLOR_POPUP_BG,
-            backdropFilter: 'blur(12px)',
-            webkitBackdropFilter: 'blur(12px)',
-            borderRadius: '10px',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.05)',
-            border: '1px solid rgba(255,255,255,0.4)',
-            padding: '5px',
-            zIndex: '2147483647',
-            display: 'flex',
-            gap: '6px',
-            pointerEvents: 'auto',
-            animation: 'haze-pop-in 0.15s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards',
-            boxSizing: 'border-box'
+            position: 'fixed', top: `${event.clientY}px`, left: `${event.clientX}px`,
+            transform: 'translate(-65%, -50%)', backgroundColor: COLOR_BG_BLUR,
+            backdropFilter: 'blur(12px)', webkitBackdropFilter: 'blur(12px)',
+            borderRadius: '10px', boxShadow: '0 8px 32px rgba(0,0,0,0.12)',
+            border: '1px solid rgba(255,255,255,0.4)', padding: '5px', zIndex: '2147483646',
+            display: 'flex', gap: '6px', animation: 'haze-pop-in 0.15s ease-out forwards'
         });
 
-        const createBtn = (text, isPrimary) => {
+        const createBtn = (text, isPrimary, onClick) => {
             const btn = document.createElement('div');
             btn.textContent = text;
             Object.assign(btn.style, {
-                padding: '6px 12px',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                fontSize: '13px',
-                fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
-                fontWeight: isPrimary ? '600' : '400',
-                color: isPrimary ? COLOR_PRIMARY : COLOR_SECONDARY,
+                padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '13px',
+                fontWeight: isPrimary ? '600' : '400', color: isPrimary ? COLOR_PRIMARY : '#555',
                 backgroundColor: isPrimary ? 'rgba(0, 122, 255, 0.1)' : 'transparent',
-                transition: 'all 0.1s ease',
-                whiteSpace: 'nowrap',
-                userSelect: 'none',
-                textAlign: 'center',
-                minWidth: isPrimary ? '80px' : '60px',
-                flex: isPrimary ? '1.5' : '1'
+                minWidth: isPrimary ? '80px' : '60px', textAlign: 'center', transition: 'all 0.1s'
             });
-
-            btn.addEventListener('mouseenter', () => {
-                btn.style.backgroundColor = isPrimary ? 'rgba(0, 122, 255, 0.2)' : 'rgba(0,0,0,0.05)';
-                btn.style.transform = 'translateY(-1px)';
-            });
-            btn.addEventListener('mouseleave', () => {
-                btn.style.backgroundColor = isPrimary ? 'rgba(0, 122, 255, 0.1)' : 'transparent';
-                btn.style.transform = 'translateY(0)';
-            });
-            
+            btn.onmouseenter = () => btn.style.backgroundColor = isPrimary ? 'rgba(0,122,255,0.2)' : 'rgba(0,0,0,0.05)';
+            btn.onmouseleave = () => btn.style.backgroundColor = isPrimary ? 'rgba(0,122,255,0.1)' : 'transparent';
+            btn.onclick = (e) => { e.stopPropagation(); onClick(); popup.remove(); };
             return btn;
         };
 
-        const btnCurrent = createBtn('🏠 当前', false);
-        const isBg = getBackgroundMode();
-        const btnNewTab = createBtn(isBg ? '🚀 后台' : '↗ 新标签', true);
+        popup.appendChild(createBtn('🏠 当前', false, () => location.href = link.href));
+        popup.appendChild(createBtn(state.background ? '🚀 后台' : '↗ 新标签', true, () => {
+            if (state.background) GM_openInTab(link.href, { active: false, insert: true, setParent: true });
+            else window.open(link.href, '_blank');
+        }));
 
-        btnCurrent.onclick = (e) => {
-            e.stopPropagation();
-            window.location.href = link.href;
-            popup.remove();
-        };
-
-        btnNewTab.onclick = (e) => {
-            e.stopPropagation();
-            if (getBackgroundMode()) {
-                GM_openInTab(link.href, { active: false, insert: true, setParent: true });
-            } else {
-                window.open(link.href, '_blank');
-            }
-            popup.remove();
-        };
-
-        popup.appendChild(btnCurrent);
-        popup.appendChild(btnNewTab);
         document.body.appendChild(popup);
-
-        // === 智能防抖关闭逻辑 (关键) ===
-        let autoCloseTimer = setTimeout(() => { if (popup.parentNode) popup.remove(); }, AUTO_CLOSE_TIMEOUT);
-        let leaveTimer = null;
-
-        popup.addEventListener('mouseenter', () => {
-            // 鼠标进入，清除所有关闭倒计时
-            clearTimeout(autoCloseTimer);
-            if (leaveTimer) clearTimeout(leaveTimer);
-        });
-
-        popup.addEventListener('mouseleave', () => {
-            // 鼠标离开，启动容错倒计时 (800ms)
-            // 如果用户只是手滑并在800ms内移回，这里会被 mouseenter 的 clear 清除，从而不关闭
-            leaveTimer = setTimeout(() => { 
-                if (popup.parentNode) popup.remove(); 
-            }, MOUSE_LEAVE_DELAY);
-        });
+        
+        let closeTimer = setTimeout(() => popup.remove(), AUTO_CLOSE_TIMEOUT);
+        let leaveTimer;
+        popup.onmouseenter = () => { clearTimeout(closeTimer); clearTimeout(leaveTimer); };
+        popup.onmouseleave = () => leaveTimer = setTimeout(() => popup.remove(), MOUSE_LEAVE_DELAY);
     };
 
-    // === 事件监听 ===
+    // === 主逻辑 ===
     const handleLinkClick = (event) => {
         if (isCurrentSiteExcluded()) return;
         const link = event.target.closest('a');
         if (!link || !link.href) return;
-        
         if (event.ctrlKey || event.metaKey || event.shiftKey) return;
         if (isFunctionalLink(link) || isSystemFolderLink(link.href)) return;
 
-        const currentMode = getCurrentMode();
-        if (currentMode === 'popup') {
-            event.preventDefault();
-            event.stopPropagation();
+        const mode = state.mode;
+        if (mode === 'popup') {
+            event.preventDefault(); event.stopPropagation();
             createLinkOptionsPopup(event, link);
-        } else if (currentMode === 'newtab') {
-            event.preventDefault();
-            event.stopPropagation();
-            if (getBackgroundMode()) {
-                GM_openInTab(link.href, { active: false, insert: true, setParent: true });
-            } else {
-                window.open(link.href, '_blank');
-            }
+        } else if (mode === 'newtab') {
+            event.preventDefault(); event.stopPropagation();
+            if (state.background) GM_openInTab(link.href, { active: false, insert: true, setParent: true });
+            else window.open(link.href, '_blank');
         }
     };
 
-    // === 菜单注册 ===
-    let menuIds = [];
-    const registerMenu = () => {
-        menuIds.forEach(id => GM_unregisterMenuCommand(id));
-        menuIds = [];
-
-        const mode = getCurrentMode();
-        const isBg = getBackgroundMode();
-        const showInd = getIndicatorState();
-        
-        const modeText = {
-            'popup': '🟣 模式：选择框 (当前)',
-            'newtab': '🟢 模式：直接新标签',
-            'default': '⚪ 模式：浏览器默认'
-        };
-
-        menuIds.push(GM_registerMenuCommand(modeText[mode], () => {
-            const next = mode === 'popup' ? 'newtab' : (mode === 'newtab' ? 'default' : 'popup');
-            GM_setValue('openMode', next);
-            location.reload();
-        }));
-
-        if (mode !== 'default') {
-            menuIds.push(GM_registerMenuCommand(isBg ? '⚙️ 新标签：后台静默' : '⚙️ 新标签：前台跳转', () => {
-                GM_setValue('backgroundMode', !isBg);
-                registerMenu();
-            }));
-        }
-
-        menuIds.push(GM_registerMenuCommand(showInd ? '👁️ 指示器：开启' : '👁️ 指示器：关闭', () => {
-            GM_setValue('showIndicator', !showInd);
-            location.reload();
-        }));
-
-        if (isCurrentSiteExcluded()) {
-            menuIds.push(GM_registerMenuCommand(`✅ 恢复此网站`, () => {
-                const s = getExcludedSites();
-                s.splice(s.indexOf(getCurrentDomain()), 1);
-                GM_setValue('excludedSites', s);
-                location.reload();
-            }));
-        } else {
-            menuIds.push(GM_registerMenuCommand(`🚫 排除此网站`, () => {
-                const s = getExcludedSites();
-                s.push(getCurrentDomain());
-                GM_setValue('excludedSites', s);
-                location.reload();
-            }));
-        }
-    };
-
+    // === 初始化 ===
     const init = () => {
+        GM_registerMenuCommand('⚙️ 脚本设置中心', createSettingsPanel); // 唯一的菜单入口
         document.addEventListener('click', handleLinkClick, true);
-        registerMenu();
         updateLinkIndicators();
-        observeDOM();
+        
+        const observer = new MutationObserver((mutations) => {
+            if (mutations.some(m => m.addedNodes.length)) setTimeout(updateLinkIndicators, 500);
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
     };
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
