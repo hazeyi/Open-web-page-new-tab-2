@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         打开网页：新标签页2 (v3.5 设置增强版)
+// @name         打开网页：新标签页2 (v3.6 URL归一化版)
 // @namespace    http://tampermonkey.net/
-// @version      3.5
-// @description  核心逻辑保持v3.4。新增分栏式设置面板，恢复黑名单管理，增加功能说明。Designed by HAZE.
+// @version      3.6
+// @description  引入URL归一化引擎，强制将所有链接转换为绝对HTTPS路径，修复GitHub等网站在Helium/非Chrome环境下路径解析错误的问题。
 // @author       HAZE
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
@@ -36,7 +36,17 @@
         set excluded(v) { GM_setValue('excludedSites', v); }
     };
 
-    // === CSS 注入 (新增 Tab 和 列表样式) ===
+    // === URL 归一化工具 (v3.6 核心) ===
+    const getAbsoluteUrl = (url) => {
+        try {
+            // 使用当前页面作为 Base URL 进行解析
+            return new URL(url, window.location.href).href;
+        } catch (e) {
+            return url; // 如果解析失败，返回原值
+        }
+    };
+
+    // === CSS 注入 ===
     const injectStyle = () => {
         if (document.getElementById('haze-style')) return;
         const s = document.createElement('style');
@@ -45,14 +55,12 @@
             :root { --haze-bg: rgba(255,255,255,0.95); --haze-text: #333; --haze-text-sub: #666; --haze-border: rgba(0,0,0,0.1); --haze-primary: #007AFF; --haze-ind-popup: #af52de; --haze-ind-newtab: #34c759; --haze-hover: rgba(0,0,0,0.05); }
             [data-haze-theme="dark"] { --haze-bg: rgba(30,30,30,0.9); --haze-text: #f0f0f0; --haze-text-sub: #aaa; --haze-border: rgba(255,255,255,0.15); --haze-primary: #0A84FF; --haze-ind-popup: #bf5af2; --haze-ind-newtab: #32d74b; --haze-hover: rgba(255,255,255,0.1); }
             
-            /* 指示器 */
             a[data-haze-status="text"] { position: relative; } 
             a[data-haze-status="text"]::after { content: ""; display: inline-block; width: 5px; height: 5px; margin-left: 3px; border-radius: 50%; vertical-align: middle; opacity: 0.6; pointer-events: none; transition: transform 0.2s; }
             a[data-haze-status="text"]:hover::after { transform: scale(1.6); opacity: 1; }
             .haze-ind-popup::after { background: var(--haze-ind-popup); box-shadow: 0 0 5px var(--haze-ind-popup); }
             .haze-ind-newtab::after { background: var(--haze-ind-newtab); box-shadow: 0 0 5px var(--haze-ind-newtab); }
 
-            /* 弹窗 */
             #haze-popup { position: fixed; display: flex; gap: 6px; padding: 6px; z-index: 2147483647; background: var(--haze-bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-radius: 12px; border: 1px solid var(--haze-border); box-shadow: 0 8px 30px rgba(0,0,0,0.2); transform: translate(-65%, -50%); animation: haze-pop 0.1s ease-out forwards; }
             @keyframes haze-pop { from { opacity: 0; transform: translate(-65%, -45%) scale(0.95); } to { opacity: 1; transform: translate(-65%, -50%) scale(1); } }
             .haze-popup-btn { padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--haze-text); transition: background 0.1s; white-space: nowrap; }
@@ -60,11 +68,8 @@
             .haze-popup-btn.primary { color: var(--haze-primary); background: rgba(0,122,255,0.1); font-weight: 600; min-width: 70px; }
             .haze-popup-btn.primary:hover { opacity: 0.8; }
 
-            /* 设置面板容器 */
             #haze-settings-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 2147483647; background: rgba(0,0,0,0.3); display: flex; justify-content: center; align-items: center; backdrop-filter: blur(5px); }
             #haze-settings-panel { width: 400px; height: 500px; background: var(--haze-bg); border-radius: 16px; box-shadow: 0 20px 50px rgba(0,0,0,0.3); color: var(--haze-text); font-family: system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--haze-border); }
-            
-            /* 头部与Tab */
             .haze-header { padding: 20px 24px 0; flex-shrink: 0; }
             .haze-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
             .haze-title { font-weight: 700; font-size: 18px; }
@@ -73,32 +78,23 @@
             .haze-tab-item { padding: 10px 0; font-size: 14px; color: var(--haze-text-sub); cursor: pointer; position: relative; transition: 0.2s; }
             .haze-tab-item.active { color: var(--haze-text); font-weight: 600; }
             .haze-tab-item.active::after { content: ''; position: absolute; bottom: -1px; left: 0; width: 100%; height: 2px; background: var(--haze-primary); border-radius: 2px; }
-
-            /* 内容区 */
             .haze-body { flex: 1; overflow-y: auto; padding: 20px 24px; }
             .haze-tab-content { display: none; animation: haze-fade 0.2s; }
             .haze-tab-content.active { display: block; }
             @keyframes haze-fade { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-
-            /* 组件 */
             .haze-section { margin-bottom: 25px; }
             .haze-label { font-size: 13px; color: var(--haze-text-sub); margin-bottom: 8px; font-weight: 600; }
             .haze-capsule { display: flex; background: var(--haze-hover); padding: 4px; border-radius: 10px; }
             .haze-capsule-btn { flex: 1; text-align: center; padding: 8px; font-size: 13px; border-radius: 8px; cursor: pointer; color: var(--haze-text-sub); transition: 0.2s; }
             .haze-capsule-btn.active { background: var(--haze-bg); color: var(--haze-primary); font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-            
             .haze-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--haze-border); }
             .haze-row:last-child { border-bottom: none; }
-            
-            /* 开关 */
             .haze-switch { position: relative; width: 44px; height: 24px; }
             .haze-switch input { opacity: 0; width: 0; height: 0; }
             .haze-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--haze-border); transition: .3s; border-radius: 34px; }
             .haze-slider:before { position: absolute; content: ""; height: 20px; width: 20px; left: 2px; bottom: 2px; background-color: white; transition: .3s; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
             input:checked + .haze-slider { background-color: var(--haze-primary); }
             input:checked + .haze-slider:before { transform: translateX(20px); }
-
-            /* 黑名单列表 */
             .haze-list-container { background: var(--haze-hover); border-radius: 10px; overflow: hidden; max-height: 250px; overflow-y: auto; margin-bottom: 10px; }
             .haze-list-item { display: flex; justify-content: space-between; padding: 12px 15px; font-size: 13px; border-bottom: 1px solid var(--haze-border); align-items: center; }
             .haze-list-item:last-child { border-bottom: none; }
@@ -107,8 +103,6 @@
             .haze-input-group { display: flex; gap: 8px; }
             .haze-input { flex: 1; background: var(--haze-hover); border: 1px solid var(--haze-border); border-radius: 8px; padding: 8px 12px; color: var(--haze-text); font-size: 13px; outline: none; }
             .haze-btn-add { padding: 0 16px; background: var(--haze-primary); color: white; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; }
-
-            /* 说明文字 */
             .haze-tip { font-size: 12px; color: var(--haze-text-sub); background: var(--haze-hover); padding: 10px; border-radius: 8px; line-height: 1.5; margin-top: 5px; }
             .haze-footer { text-align: center; padding: 15px; font-size: 12px; color: var(--haze-text-sub); border-top: 1px solid var(--haze-border); opacity: 0.7; }
         `;
@@ -129,7 +123,7 @@
         }
     };
 
-    // === 逻辑函数 (保持 v3.4 原样) ===
+    // === 逻辑函数 ===
     const isRichMediaLink = (link) => {
         if (link.querySelector('img, svg, picture, video, canvas, div, section, article')) return true;
         const cls = (link.className || '').toLowerCase();
@@ -196,14 +190,18 @@
         if (event.ctrlKey || event.metaKey || event.shiftKey) return;
         const isForceMode = event.altKey;
         if (isFunctionalLink(link, isForceMode)) return;
+        
+        // 核心修改：将相对路径转为绝对路径
+        const absUrl = getAbsoluteUrl(rawHref);
+
         const mode = state.mode;
         if (mode === 'popup') {
             event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); 
-            createPopup(event, link, rawHref);
+            createPopup(event, link, absUrl); // 传递绝对路径
         } else if (mode === 'newtab') {
             event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation();
-            if (state.background) GM_openInTab(rawHref, { active: false, insert: true, setParent: true });
-            else window.open(rawHref, '_blank');
+            if (state.background) GM_openInTab(absUrl, { active: false, insert: true, setParent: true });
+            else window.open(absUrl, '_blank');
         }
     };
 
@@ -232,7 +230,6 @@
         popup.onmouseleave = () => leaveTimer = setTimeout(() => popup.remove(), 800);
     };
 
-    // === 新版设置面板 (Tabbed UI) ===
     const createSettingsPanel = () => {
         if (document.getElementById('haze-settings-overlay')) return;
         injectStyle();
@@ -288,8 +285,9 @@
                         <div class="haze-section">
                             <div class="haze-label">使用技巧 (v3.4 新特性)</div>
                             <div class="haze-tip">
-                                1. <b>强制召唤</b>：如果在某些网站脚本没有反应，按住 <code>Alt</code> (Win) 或 <code>Option</code> (Mac) 键点击链接，可强制弹出选择框。<br><br>
-                                2. <b>原生模拟</b>：如果脚本误拦截了登录/弹窗按钮，点击选择框中的 <code>🏠 当前</code>，脚本会模拟一次原生点击，确保网页功能正常执行。
+                                1. <b>强制召唤</b>：按住 <code>Alt</code> (Win) 或 <code>Option</code> (Mac) 键点击链接，可强制弹出选择框。<br><br>
+                                2. <b>原生模拟</b>：如果脚本误拦截了按钮，点击选择框中的 <code>🏠 当前</code>，会执行一次原生点击。<br><br>
+                                3. <b>Helium兼容</b>：已内置URL归一化引擎，修复非Chrome环境下的路径解析问题。
                             </div>
                         </div>
                     </div>
@@ -305,22 +303,20 @@
                             <div class="haze-label">黑名单管理</div>
                             <div class="haze-list-container" id="haze-blacklist"></div>
                             <div class="haze-input-group">
-                                <input type="text" class="haze-input" id="input-domain" placeholder="输入域名 (如 example.com)">
+                                <input type="text" class="haze-input" id="input-domain" placeholder="输入域名">
                                 <button class="haze-btn-add" id="btn-add-domain">添加</button>
                             </div>
                         </div>
                     </div>
                 </div>
-                <div class="haze-footer">Link Master v3.5 · Designed by HAZE</div>
+                <div class="haze-footer">Link Master v3.6 · Designed by HAZE</div>
             </div>`;
         
-        // === 逻辑绑定 ===
         const panel = overlay.querySelector('#haze-settings-panel');
         const close = () => { overlay.remove(); updateLinkIndicators(); };
         overlay.querySelector('.haze-close').onclick = close;
         overlay.onclick = (e) => { if(e.target===overlay) close(); };
 
-        // Tab 切换
         panel.querySelectorAll('.haze-tab-item').forEach(tab => {
             tab.onclick = () => {
                 panel.querySelectorAll('.haze-tab-item').forEach(t => t.classList.remove('active'));
@@ -330,7 +326,6 @@
             };
         });
 
-        // 基础设置
         panel.querySelectorAll('[data-k]').forEach(btn => btn.onclick = () => {
             state[btn.dataset.k] = btn.dataset.v;
             btn.parentNode.querySelectorAll('.active').forEach(b=>b.classList.remove('active'));
@@ -338,11 +333,9 @@
             if(btn.dataset.k === 'theme') applyTheme();
         });
 
-        // 高级开关
         panel.querySelector('#sw-bg').onchange = (e) => state.background = e.target.checked;
         panel.querySelector('#sw-ind').onchange = (e) => { state.indicator = e.target.checked; updateLinkIndicators(); };
 
-        // 黑名单逻辑
         const renderBlacklist = () => {
             const listEl = panel.querySelector('#haze-blacklist');
             if (state.excluded.length === 0) {
@@ -393,7 +386,6 @@
         applyTheme();
     };
 
-    // === 主程序 ===
     const main = () => {
         injectStyle(); applyTheme(); updateLinkIndicators();
         GM_registerMenuCommand('⚙️ 脚本设置中心', createSettingsPanel);
