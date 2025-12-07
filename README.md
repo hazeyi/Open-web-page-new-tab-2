@@ -44,7 +44,7 @@
 ## 🛠️ 使用说明 / Usage
 
 1.  安装 [Tampermonkey](http://tampermonkey.net/) 扩展。
-2.  点击 **[安装脚本]([YOUR_SCRIPT_INSTALL_LINK_HERE](https://github.com/hazeyi/Open-web-page-new-tab-2/blob/main/Open-web-page-new-tab-2.js))** (Install Script)。
+2.  点击 **[安装脚本]([https://github.com/hazeyi/Open-web-page-new-tab-2/blob/main/Open-web-page-new-tab-2.js])** (Install Script)。
 3.  浏览任意网页，点击链接体验。
 4.  **菜单设置**: 点击浏览器右上角的 Tampermonkey 图标，选择本脚本，即可看到动态控制面板：
     * `⚙️ 打开方式：...` (切换 Popup/Direct/Default)
