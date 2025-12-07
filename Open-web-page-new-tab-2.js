@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         打开网页：新标签页2 (v3.0 终极融合版)
+// @name         打开网页：新标签页2 (v3.3 标题保护版)
 // @namespace    http://tampermonkey.net/
-// @version      3.0
-// @description  完美融合：保留v2.9的高权限点击(修复MacKed)，引入v2.6的排版保护+动态纠错机制(修复MacApp懒加载问题)。
+// @version      3.3
+// @description  修正误判：引入 H1-H6 标题保护机制，将关键词匹配改为"独立单词"模式，防止"Display"被误判为"Play"导致功能失效。
 // @author       HAZE
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
@@ -18,8 +18,7 @@
 
     // === UI 配置 ===
     const AUTO_CLOSE_TIMEOUT = 3500;
-    const MOUSE_LEAVE_DELAY = 800;
-
+    
     // === 状态管理 ===
     const state = {
         get mode() { return GM_getValue('openMode', 'popup'); },
@@ -40,77 +39,39 @@
         const s = document.createElement('style');
         s.id = 'haze-style';
         s.textContent = `
-            :root {
-                --haze-bg: rgba(255, 255, 255, 0.95); --haze-bg-hover: rgba(255, 255, 255, 0.7);
-                --haze-text: #333; --haze-text-sub: #666; --haze-border: rgba(0,0,0,0.15);
-                --haze-shadow: 0 8px 30px rgba(0,0,0,0.2);
-                --haze-primary: #007AFF; --haze-primary-bg: rgba(0,122,255,0.1);
-                --haze-ind-popup: #af52de; --haze-ind-newtab: #34c759;
-            }
-            [data-haze-theme="dark"] {
-                --haze-bg: rgba(30, 30, 30, 0.9); --haze-bg-hover: rgba(60, 60, 60, 0.7);
-                --haze-text: #f0f0f0; --haze-text-sub: #aaa; --haze-border: rgba(255,255,255,0.2);
-                --haze-shadow: 0 10px 40px rgba(0,0,0,0.6);
-                --haze-primary: #0A84FF; --haze-primary-bg: rgba(10,132,255,0.25);
-                --haze-ind-popup: #bf5af2; --haze-ind-newtab: #32d74b;
-            }
+            :root { --haze-bg: rgba(255,255,255,0.95); --haze-text: #333; --haze-primary: #007AFF; --haze-ind-popup: #af52de; --haze-ind-newtab: #34c759; }
+            [data-haze-theme="dark"] { --haze-bg: rgba(30,30,30,0.9); --haze-text: #f0f0f0; --haze-primary: #0A84FF; --haze-ind-popup: #bf5af2; --haze-ind-newtab: #32d74b; }
             
-            /* 视觉层：指示器仅对标记为 text 的链接生效 */
-            /* 关键：绝不使用通配符，防止污染图片链接 */
             a[data-haze-status="text"] { position: relative; } 
             a[data-haze-status="text"]::after {
                 content: ""; display: inline-block; width: 5px; height: 5px; margin-left: 3px;
-                border-radius: 50%; vertical-align: middle; opacity: 0.6; pointer-events: none;
-                transition: transform 0.2s;
+                border-radius: 50%; vertical-align: middle; opacity: 0.6; pointer-events: none; transition: transform 0.2s;
             }
             a[data-haze-status="text"]:hover::after { transform: scale(1.6); opacity: 1; }
-            
-            /* 颜色类 */
-            .haze-ind-popup::after { background-color: var(--haze-ind-popup); box-shadow: 0 0 5px var(--haze-ind-popup); }
-            .haze-ind-newtab::after { background-color: var(--haze-ind-newtab); box-shadow: 0 0 5px var(--haze-ind-newtab); }
+            .haze-ind-popup::after { background: var(--haze-ind-popup); box-shadow: 0 0 5px var(--haze-ind-popup); }
+            .haze-ind-newtab::after { background: var(--haze-ind-newtab); box-shadow: 0 0 5px var(--haze-ind-newtab); }
 
-            /* 弹窗样式 */
             #haze-popup {
                 position: fixed; display: flex; gap: 6px; padding: 6px; z-index: 2147483647;
                 background: var(--haze-bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
-                border-radius: 12px; border: 1px solid var(--haze-border); box-shadow: var(--haze-shadow);
+                border-radius: 12px; border: 1px solid rgba(128,128,128,0.2); box-shadow: 0 8px 30px rgba(0,0,0,0.2);
                 transform: translate(-65%, -50%); animation: haze-pop 0.1s ease-out forwards;
             }
             @keyframes haze-pop { from { opacity: 0; transform: translate(-65%, -45%) scale(0.95); } to { opacity: 1; transform: translate(-65%, -50%) scale(1); } }
             
             .haze-popup-btn {
                 padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500;
-                color: var(--haze-text); transition: background 0.1s; white-space: nowrap; text-align: center;
+                color: var(--haze-text); transition: background 0.1s; white-space: nowrap;
             }
-            .haze-popup-btn:hover { background: var(--haze-bg-hover); }
-            .haze-popup-btn.primary { color: var(--haze-primary); background: var(--haze-primary-bg); font-weight: 600; min-width: 70px; }
+            .haze-popup-btn:hover { background: rgba(128,128,128,0.1); }
+            .haze-popup-btn.primary { color: var(--haze-primary); background: rgba(0,122,255,0.1); font-weight: 600; min-width: 70px; }
             .haze-popup-btn.primary:hover { opacity: 0.8; }
 
-            /* 设置面板样式 */
-            #haze-settings-overlay {
-                position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 2147483647;
-                background: rgba(0,0,0,0.3); display: flex; justify-content: center; align-items: center;
-                backdrop-filter: blur(5px);
-            }
-            #haze-settings-panel {
-                width: 360px; background: var(--haze-bg); border: 1px solid var(--haze-border);
-                border-radius: 16px; box-shadow: var(--haze-shadow); backdrop-filter: blur(40px);
-                color: var(--haze-text); font-family: system-ui, sans-serif; overflow: hidden;
-            }
-            .haze-header { padding: 15px 20px; border-bottom: 1px solid var(--haze-border); display: flex; justify-content: space-between; align-items: center; }
-            .haze-body { padding: 0 20px; max-height: 70vh; overflow-y: auto; }
-            .haze-section { padding: 15px 0; border-bottom: 1px solid var(--haze-border); }
-            .haze-section:last-child { border-bottom: none; }
-            .haze-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 14px; }
-            .haze-capsule { display: flex; background: var(--haze-bg-hover); padding: 3px; border-radius: 8px; }
-            .haze-capsule-btn { flex: 1; text-align: center; padding: 6px; font-size: 12px; border-radius: 6px; cursor: pointer; color: var(--haze-text-sub); }
-            .haze-capsule-btn.active { background: var(--haze-bg); color: var(--haze-primary); font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-            .haze-switch { position: relative; width: 40px; height: 22px; }
-            .haze-switch input { opacity: 0; width: 0; height: 0; }
-            .haze-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--haze-border); transition: .3s; border-radius: 34px; }
-            .haze-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 2px; bottom: 2px; background-color: white; transition: .3s; border-radius: 50%; }
-            input:checked + .haze-slider { background-color: var(--haze-primary); }
-            input:checked + .haze-slider:before { transform: translateX(18px); }
+            #haze-settings-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 2147483647; background: rgba(0,0,0,0.3); display: flex; justify-content: center; align-items: center; backdrop-filter: blur(5px); }
+            #haze-settings-panel { width: 360px; background: var(--haze-bg); border-radius: 16px; padding: 20px; box-shadow: 0 10px 40px rgba(0,0,0,0.3); color: var(--haze-text); font-family: system-ui; }
+            .haze-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; font-size: 14px; }
+            .haze-btn { padding: 5px 10px; border-radius: 6px; background: rgba(128,128,128,0.1); cursor: pointer; }
+            .haze-btn.active { background: var(--haze-primary); color: #fff; }
         `;
         (document.head || document.documentElement).appendChild(s);
     };
@@ -130,90 +91,83 @@
         }
     };
 
-    // === 关键逻辑：富媒体检测 ===
+    // === 核心逻辑 ===
     const isRichMediaLink = (link) => {
-        // 1. 结构检查：包含图片、SVG、视频等
         if (link.querySelector('img, svg, picture, video, canvas, div, section, article')) return true;
-        
-        // 2. Class 关键词检查 (防御 MacApp 这种用 background-image 的)
         const cls = (link.className || '').toLowerCase();
         if (/thumb|img|pic|cover|card|banner|poster|photo/.test(cls)) return true;
-
-        // 3. 内容为空 (通常是背景图链接)
         if (link.textContent.trim() === '') return true;
-        
         return false;
     };
 
-    // === 核心功能判断 ===
     const isFunctionalLink = (link) => {
-        // 穿透：图片链接虽然不加指示器，但必须允许被 handleLinkClick 接管
-        if (isRichMediaLink(link)) return false;
-
         const rawHref = link.getAttribute('href');
         if (!rawHref || rawHref === '#' || rawHref.startsWith('javascript:') || rawHref.startsWith('mailto:')) return true;
         if (link.target === '_self' || link.target === '_iframe') return true;
         if (link.getAttribute('class')?.includes('script-link')) return false;
 
+        // 1. 标题标签特权 (MacKed 修复核心)
+        // 如果链接被 h1-h6 包裹，直接认定为文章标题，强制接管
+        if (link.closest('h1, h2, h3, h4, h5, h6')) return false;
+
+        // 2. 富媒体特权 (MacKed 图片修复)
+        if (isRichMediaLink(link)) return false; 
+
+        // 3. 页内锚点检查 (ClashMac 目录修复)
+        try {
+            if (rawHref.startsWith('#')) return true;
+            const urlObj = new URL(link.href);
+            if (urlObj.pathname === window.location.pathname && urlObj.hash !== '') return true;
+        } catch(e) {}
+
+        const attrs = ['onclick', 'data-toggle', 'data-target', 'aria-controls', 'aria-expanded', 'ng-click', '@click', 'v-on:click'];
+        for (const attr of attrs) if (link.hasAttribute(attr)) return true;
+
+        // 4. 关键词过滤 (v3.3 升级：正则单词边界匹配)
+        // 防止 "Display" 命中 "play"，"Editor" 命中 "edit"
         const text = link.textContent.trim();
         if (/^\d+$/.test(text)) return true;
 
-        const checkStr = (link.className + link.id + text).toLowerCase();
+        const checkStr = (link.className + ' ' + link.id + ' ' + text).toLowerCase();
         const keywords = ['login', 'logout', 'sign', 'cart', 'buy', 'like', 'fav', 'share', 'comment', 'play', '登录', '注册', '注销', '购物车', '购买', '点赞', '收藏', '评论', '播放', '展开', '收起'];
         
-        if (text.length <= 5 && keywords.some(kw => text.toLowerCase().includes(kw))) return true;
-        if (keywords.some(kw => checkStr.includes(kw))) return true;
+        // 构建正则：\bkeyword\b
+        const isKeywordMatch = keywords.some(kw => {
+            // 中文直接匹配，英文加边界
+            if (/[\u4e00-\u9fa5]/.test(kw)) return checkStr.includes(kw);
+            return new RegExp(`\\b${kw}\\b`).test(checkStr);
+        });
+
+        if (text.length <= 5 && isKeywordMatch) return true;
+        if (isKeywordMatch) return true;
 
         return false;
     };
 
-    // === 视觉指示器 (动态纠错版) ===
     const updateLinkIndicators = () => {
-        // 全局清理：如果关闭功能，或者网站排除，移除所有标记
-        if (!state.indicator || state.excluded.includes(location.hostname) || state.mode === 'default') {
-            document.querySelectorAll('a[data-haze-status]').forEach(el => {
-                el.removeAttribute('data-haze-status');
-                el.className = el.className.replace(/haze-ind-\w+/g, '').trim();
-            });
-            return;
-        }
-        
+        document.querySelectorAll('a[data-haze-status]').forEach(el => {
+            el.removeAttribute('data-haze-status');
+            el.className = el.className.replace(/haze-ind-\w+/g, '').trim();
+        });
+
+        if (!state.indicator || state.excluded.includes(location.hostname) || state.mode === 'default') return;
         const cls = state.mode === 'popup' ? 'haze-ind-popup' : 'haze-ind-newtab';
         
         document.querySelectorAll('a').forEach(link => {
-            // [纠错核心]: 如果之前被标记为 text，但现在变成了富媒体(图片加载出来了)，立即移除标记！
-            // 这就是修复 MacApp 图片显示一半的关键
-            if (isRichMediaLink(link)) {
-                if (link.getAttribute('data-haze-status') === 'text') {
-                    link.removeAttribute('data-haze-status');
-                    link.classList.remove(cls);
-                }
-                return; // 跳过后续添加逻辑
-            }
-
-            // 如果已经标记正确，跳过
-            if (link.getAttribute('data-haze-status') === 'text') return;
-
-            // 功能链接跳过
+            if (isRichMediaLink(link)) return;
             if (isFunctionalLink(link)) return;
-            
-            // 标记为纯文本链接
             link.setAttribute('data-haze-status', 'text');
             link.classList.add(cls);
         });
         applyTheme();
     };
 
-    // === 交互核心 (v2.9 继承：最高权限捕获) ===
     const handleLinkClick = (event) => {
         let link = event.target.closest('a');
-        
-        // 穿透逻辑：MacKed 修复
         if (link && (!link.getAttribute('href') || link.getAttribute('href') === '#')) {
              const parentLink = link.parentElement ? link.parentElement.closest('a') : null;
              if (parentLink) link = parentLink;
         }
-
         if (!link) return;
         const rawHref = link.getAttribute('href');
         if (!rawHref) return;
@@ -224,36 +178,27 @@
         if (isFunctionalLink(link)) return;
 
         const mode = state.mode;
-        // 强制接管，阻止冒泡，战胜其他脚本
         if (mode === 'popup') {
-            event.preventDefault();
-            event.stopPropagation();
-            event.stopImmediatePropagation(); 
+            event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); 
             createPopup(event, link, rawHref);
         } else if (mode === 'newtab') {
-            event.preventDefault();
-            event.stopPropagation();
-            event.stopImmediatePropagation();
+            event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation();
             if (state.background) GM_openInTab(rawHref, { active: false, insert: true, setParent: true });
             else window.open(rawHref, '_blank');
         }
     };
 
-    // === UI 组件 ===
     const createPopup = (e, link, url) => {
         const old = document.getElementById('haze-popup'); if (old) old.remove();
         injectStyle();
-        
         const popup = document.createElement('div');
         popup.id = 'haze-popup';
         Object.assign(popup.style, { top: `${e.clientY}px`, left: `${e.clientX}px` });
-
-        const btn1 = document.createElement('div');
-        btn1.className = 'haze-popup-btn'; btn1.textContent = '🏠 当前';
+        
+        const btn1 = document.createElement('div'); btn1.className = 'haze-popup-btn'; btn1.textContent = '🏠 当前';
         btn1.onclick = (ev) => { ev.stopPropagation(); location.href = url; popup.remove(); };
-
-        const btn2 = document.createElement('div');
-        btn2.className = 'haze-popup-btn primary'; 
+        
+        const btn2 = document.createElement('div'); btn2.className = 'haze-popup-btn primary'; 
         btn2.textContent = state.background ? '🚀 后台' : '↗ 新标签';
         btn2.onclick = (ev) => {
             ev.stopPropagation();
@@ -261,15 +206,12 @@
             else window.open(url, '_blank');
             popup.remove();
         };
-
-        popup.append(btn1, btn2);
-        document.body.appendChild(popup);
-        applyTheme();
-
+        
+        popup.append(btn1, btn2); document.body.appendChild(popup); applyTheme();
         let closeTimer = setTimeout(() => popup.remove(), AUTO_CLOSE_TIMEOUT);
         let leaveTimer;
         popup.onmouseenter = () => { clearTimeout(closeTimer); clearTimeout(leaveTimer); };
-        popup.onmouseleave = () => leaveTimer = setTimeout(() => popup.remove(), MOUSE_LEAVE_DELAY);
+        popup.onmouseleave = () => leaveTimer = setTimeout(() => popup.remove(), 800);
     };
 
     const createSettingsPanel = () => {
@@ -281,76 +223,70 @@
 
         overlay.innerHTML = `
             <div id="haze-settings-panel">
-                <div class="haze-header"><div class="haze-title">✨ 脚本设置中心</div><div class="haze-close">✕</div></div>
-                <div class="haze-body">
-                    <div class="haze-section">
-                        <div class="haze-row" style="font-size:12px;color:#888;">v3.0 终极融合版</div>
-                    </div>
-                    <div class="haze-section">
-                        <div class="haze-label">默认模式</div>
-                        <div class="haze-capsule">
-                            <div class="haze-capsule-btn ${state.mode==='popup'?'active':''}" data-k="mode" data-v="popup">选择框</div>
-                            <div class="haze-capsule-btn ${state.mode==='newtab'?'active':''}" data-k="mode" data-v="newtab">直接新标签</div>
-                            <div class="haze-capsule-btn ${state.mode==='default'?'active':''}" data-k="mode" data-v="default">已禁用</div>
-                        </div>
-                    </div>
-                    <div class="haze-section">
-                        <div class="haze-label">外观主题</div>
-                        <div class="haze-capsule">
-                            <div class="haze-capsule-btn ${state.theme==='auto'?'active':''}" data-k="theme" data-v="auto">🔮 自动</div>
-                            <div class="haze-capsule-btn ${state.theme==='light'?'active':''}" data-k="theme" data-v="light">☀️ 浅色</div>
-                            <div class="haze-capsule-btn ${state.theme==='dark'?'active':''}" data-k="theme" data-v="dark">🌑 深色</div>
-                        </div>
-                    </div>
-                    <div class="haze-section">
-                        <div class="haze-row"><div>后台静默打开</div><label class="haze-switch"><input type="checkbox" id="sw-bg" ${state.background?'checked':''}><span class="haze-slider"></span></label></div>
-                        <div class="haze-row"><div>链接指示器 (仅文本)</div><label class="haze-switch"><input type="checkbox" id="sw-ind" ${state.indicator?'checked':''}><span class="haze-slider"></span></label></div>
-                    </div>
-                    <div class="haze-section">
-                        <div class="haze-row"><div>排除当前网站</div><div class="haze-popup-btn ${isEx?'primary':''}" id="btn-ex">${isEx ? '✅ 恢复' : '🚫 排除'}</div></div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:20px;">
+                    <div style="font-weight:600;font-size:16px;">✨ 脚本设置</div>
+                    <div class="haze-close" style="cursor:pointer;">✕</div>
+                </div>
+                <div class="haze-row">
+                    <div>模式</div>
+                    <div>
+                        <span class="haze-btn ${state.mode==='popup'?'active':''}" data-k="mode" data-v="popup">选择框</span>
+                        <span class="haze-btn ${state.mode==='newtab'?'active':''}" data-k="mode" data-v="newtab">新标签</span>
+                        <span class="haze-btn ${state.mode==='default'?'active':''}" data-k="mode" data-v="default">禁用</span>
                     </div>
                 </div>
-            </div>
-        `;
+                <div class="haze-row">
+                    <div>主题</div>
+                    <div>
+                        <span class="haze-btn ${state.theme==='auto'?'active':''}" data-k="theme" data-v="auto">自动</span>
+                        <span class="haze-btn ${state.theme==='light'?'active':''}" data-k="theme" data-v="light">☀️</span>
+                        <span class="haze-btn ${state.theme==='dark'?'active':''}" data-k="theme" data-v="dark">🌑</span>
+                    </div>
+                </div>
+                <div class="haze-row">
+                    <div>指示器</div>
+                    <span class="haze-btn ${state.indicator?'active':''}" id="sw-ind">${state.indicator?'开启':'关闭'}</span>
+                </div>
+                <div class="haze-row">
+                    <div>当前网站</div>
+                    <span class="haze-btn ${isEx?'':'active'}" id="btn-ex">${isEx?'已排除':'生效中'}</span>
+                </div>
+            </div>`;
         
         const close = () => { overlay.remove(); updateLinkIndicators(); };
         overlay.querySelector('.haze-close').onclick = close;
         overlay.onclick = (e) => { if(e.target===overlay) close(); };
-        
-        overlay.querySelectorAll('.haze-capsule-btn').forEach(btn => btn.onclick = () => {
+        overlay.querySelectorAll('[data-k]').forEach(btn => btn.onclick = () => {
             state[btn.dataset.k] = btn.dataset.v;
             btn.parentNode.querySelectorAll('.active').forEach(b=>b.classList.remove('active'));
             btn.classList.add('active');
             if(btn.dataset.k === 'theme') applyTheme();
         });
-        
-        overlay.querySelector('#sw-bg').onchange = (e) => state.background = e.target.checked;
-        overlay.querySelector('#sw-ind').onchange = (e) => { state.indicator = e.target.checked; updateLinkIndicators(); };
+        overlay.querySelector('#sw-ind').onclick = (e) => { 
+            state.indicator = !state.indicator; 
+            e.target.textContent = state.indicator ? '开启' : '关闭';
+            e.target.classList.toggle('active');
+            updateLinkIndicators(); 
+        };
         overlay.querySelector('#btn-ex').onclick = (e) => {
             const list = state.excluded;
-            if(list.includes(location.hostname)) { state.excluded = list.filter(d=>d!==location.hostname); e.target.textContent = '🚫 排除'; e.target.classList.remove('primary'); } 
-            else { list.push(location.hostname); state.excluded = list; e.target.textContent = '✅ 恢复'; e.target.classList.add('primary'); }
+            if(list.includes(location.hostname)) { 
+                state.excluded = list.filter(d=>d!==location.hostname); 
+                e.target.textContent = '生效中'; e.target.classList.add('active'); 
+            } else { 
+                list.push(location.hostname); state.excluded = list; 
+                e.target.textContent = '已排除'; e.target.classList.remove('active'); 
+            }
         };
-        document.body.appendChild(overlay);
-        applyTheme();
+        document.body.appendChild(overlay); applyTheme();
     };
 
-    // === 主程序 ===
     const main = () => {
-        injectStyle();
-        applyTheme();
-        updateLinkIndicators();
+        injectStyle(); applyTheme(); updateLinkIndicators();
         GM_registerMenuCommand('⚙️ 脚本设置中心', createSettingsPanel);
-
-        // 使用 Capture 阶段 (true) 确保点击被优先处理
         document.addEventListener('click', handleLinkClick, true);
-
-        const observer = new MutationObserver((mutations) => {
-            // 高频检测，确保懒加载图片被及时"除名"指示器
-            if (mutations.some(m => m.addedNodes.length)) setTimeout(updateLinkIndicators, 300);
-        });
+        const observer = new MutationObserver((mutations) => { if (mutations.some(m => m.addedNodes.length)) setTimeout(updateLinkIndicators, 500); });
         observer.observe(document.body, { childList: true, subtree: true });
-        
         window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (state.theme === 'auto') applyTheme(); });
     };
 
