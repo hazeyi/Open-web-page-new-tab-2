@@ -52,25 +52,7 @@
     * `👁️ 链接指示器：开启/关闭` (Toggle visual dots)
     * `🚫 排除当前网站` (Add current site to blacklist)
 
----
 
-## 📸 预览 / Preview
-
-*(You can add screenshots here)*
-* **Popup Mode**: Minimalist UI appearing right under your cursor.
-* **Indicators**: Subtle dots guiding your navigation.
-
----
-
-## 📝 更新日志 / Changelog
-
-### v1.2 (Latest)
-* 🎉 **New**: Added Visual Indicators (purple/green dots) to show link status.
-* 🧠 **Smart**: Enhanced heuristic engine to correctly identify Shopping, Social, and Dev buttons.
-* 🔧 **Fix**: Solved "Background Open" failure on Chromium-based browsers using `GM_openInTab`.
-* 🎨 **UI**: Revamped menu commands to show real-time status.
-
----
 
 ## ⚖️ License
 Distributed under the MIT License.
